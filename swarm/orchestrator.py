@@ -24,6 +24,12 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from config import HAZARD_RADIUS_KM, AGENT_NAMES, MAX_RETRY_ATTEMPTS
+from config import (
+    VEHICLE_TYPES,
+    FUEL_CONSUMPTION_L_PER_100KM,
+    CO2_KG_PER_LITER,
+    FUEL_COST_INR_PER_LITER,
+)
 from swarm.state import SwarmState, create_initial_state, AgentLog
 from swarm.tools import (
     tool_scan_weather_corridors,
@@ -460,6 +466,65 @@ def run_routing_agent(state: SwarmState) -> SwarmState:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Carbon & Fuel Impact Calculator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def compute_carbon_metrics(
+    distance_km: float,
+    vehicle_type: str,
+    primary_distance_km: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Compute fuel consumption, CO₂ emissions, and cost for a given route.
+    If primary_distance_km is given (detour case), also computes the delta.
+    """
+    fuel_l_per_100 = FUEL_CONSUMPTION_L_PER_100KM.get(vehicle_type, 25.0)
+    vtype_config = VEHICLE_TYPES.get(vehicle_type, {})
+    fuel_type = vtype_config.get("fuel_type", "diesel")
+    co2_per_liter = CO2_KG_PER_LITER.get(fuel_type, 2.68)
+    cost_per_liter = FUEL_COST_INR_PER_LITER.get(fuel_type, 89.62)
+
+    # Total route metrics
+    fuel_liters = (distance_km / 100.0) * fuel_l_per_100
+    co2_kg = fuel_liters * co2_per_liter
+    fuel_cost_inr = fuel_liters * cost_per_liter
+
+    result: Dict[str, Any] = {
+        "route_distance_km": round(distance_km, 2),
+        "vehicle_type": vehicle_type,
+        "fuel_type": fuel_type,
+        "fuel_consumption_liters": round(fuel_liters, 2),
+        "co2_emissions_kg": round(co2_kg, 2),
+        "fuel_cost_inr": round(fuel_cost_inr, 2),
+    }
+
+    # Detour delta (extra cost of safety)
+    if primary_distance_km is not None and primary_distance_km > 0:
+        detour_extra_km = max(0, distance_km - primary_distance_km)
+        primary_fuel = (primary_distance_km / 100.0) * fuel_l_per_100
+        primary_co2 = primary_fuel * co2_per_liter
+        primary_cost = primary_fuel * cost_per_liter
+
+        extra_fuel = fuel_liters - primary_fuel
+        extra_co2 = co2_kg - primary_co2
+        extra_cost = fuel_cost_inr - primary_cost
+
+        result["primary_route_km"] = round(primary_distance_km, 2)
+        result["detour_extra_km"] = round(detour_extra_km, 2)
+        result["detour_extra_fuel_liters"] = round(extra_fuel, 2)
+        result["detour_extra_co2_kg"] = round(extra_co2, 2)
+        result["detour_extra_cost_inr"] = round(extra_cost, 2)
+
+        # Safety benefit ratio — how many km of detour per hazard avoided
+        result["safety_tradeoff"] = (
+            f"+{round(detour_extra_km, 1)}km / +{round(extra_fuel, 1)}L diesel / "
+            f"+{round(extra_co2, 1)}kg CO₂ for hazard avoidance"
+        )
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Agent 4: Autonomous Dispatch & Execution Coordinator
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -597,6 +662,38 @@ def run_dispatch_agent(state: SwarmState) -> SwarmState:
             "detour_reason": detour_reason,
             "status": dispatch_result["status"],
         }
+
+        # ── Step 4: Compute Carbon & Fuel Consumption Metrics ────────────
+        _v_type = vehicle_assigned.get("type", "medium_truck") if vehicle_assigned else "medium_truck"
+        _route_dist = route.get("distance_km") if route else None
+        _primary_dist = route.get("primary_route_distance_km") if route else None
+
+        if _route_dist and _route_dist > 0:
+            carbon_metrics = compute_carbon_metrics(
+                distance_km=_route_dist,
+                vehicle_type=_v_type,
+                primary_distance_km=_primary_dist,
+            )
+            state["carbon_metrics"] = carbon_metrics
+            state["dispatch_manifest"]["carbon_metrics"] = carbon_metrics
+
+            _co2 = carbon_metrics["co2_emissions_kg"]
+            _fuel = carbon_metrics["fuel_consumption_liters"]
+            _cost = carbon_metrics["fuel_cost_inr"]
+
+            _carbon_msg = (
+                f"🌿 Carbon Impact: {_fuel}L {carbon_metrics['fuel_type']} → "
+                f"{_co2}kg CO₂ | Fuel cost: ₹{_cost}"
+            )
+            if carbon_metrics.get("detour_extra_km"):
+                _carbon_msg += (
+                    f" | Detour overhead: +{carbon_metrics['detour_extra_fuel_liters']}L / "
+                    f"+{carbon_metrics['detour_extra_co2_kg']}kg CO₂ / "
+                    f"+₹{carbon_metrics['detour_extra_cost_inr']}"
+                )
+            _log(state, agent, "carbon_impact", _carbon_msg, data=carbon_metrics)
+        else:
+            state["carbon_metrics"] = None
 
         _log(
             state, agent, "dispatch_created",

@@ -70,6 +70,7 @@ class DispatchManifest(TypedDict, total=False):
     hazard_avoided: bool
     detour_reason: Optional[str]
     status: str
+    carbon_metrics: Optional[Dict[str, Any]]
 
 
 class AgentLog(TypedDict, total=False):
@@ -119,6 +120,7 @@ class SwarmState(TypedDict, total=False):
     dispatch_manifest: Optional[DispatchManifest]
     inventory_deductions: List[Dict[str, Any]]
     vehicle_assignment: Optional[Dict[str, Any]]
+    carbon_metrics: Optional[Dict[str, Any]]
 
     # ─── Shared Execution Metadata ───────────────────────────────────────
     agent_logs: List[AgentLog]
@@ -156,6 +158,7 @@ def create_initial_state(
         dispatch_manifest=None,
         inventory_deductions=[],
         vehicle_assignment=None,
+        carbon_metrics=None,
         agent_logs=[],
         current_agent="",
         errors=[],

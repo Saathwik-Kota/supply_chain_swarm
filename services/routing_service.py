@@ -367,16 +367,68 @@ class RoutingService:
         """
         Self-correction loop: Find a route that avoids all hazard zones.
 
-        1. Query primary route
-        2. Check for hazard intersections
-        3. If collision detected, compute detour waypoints and re-query
-        4. Validate the new route
-        5. Repeat up to max_attempts if still colliding
+        1. Filter out hazard zones that envelop both origin AND destination
+           (intra-zone delivery — detour is pointless, truck is already inside)
+        2. Query primary route
+        3. Check for hazard intersections
+        4. If collision detected, compute detour waypoints and re-query
+        5. Validate the new route
+        6. Repeat up to max_attempts if still colliding
 
         Returns the final safe route with full reasoning trace.
         """
         reasoning_trace = []
         attempt = 0
+
+        # ── Pre-filter: exempt terminal / origin hazard zones from detour ──
+        # Geometrically, if destination is inside a hazard zone (the disaster target),
+        # any route MUST terminate inside that zone — detouring outside and re-entering
+        # causes absurd multi-hundred-kilometer loops.
+        # Similarly, if origin is inside the zone (intra-zone delivery or depot egress),
+        # direct transit is required.
+        # Only INTERMEDIATE corridor obstacles (between origin and destination) should
+        # trigger autonomous detours.
+        routable_hazards = []
+        skipped_hazards = []
+        for hz in hazard_zones:
+            h_lat = hz["center_lat"]
+            h_lon = hz["center_lon"]
+            h_radius = hz.get("radius_km", HAZARD_RADIUS_KM)
+
+            origin_inside = haversine_distance(origin_lat, origin_lon, h_lat, h_lon) <= h_radius
+            dest_inside   = haversine_distance(dest_lat, dest_lon, h_lat, h_lon) <= h_radius
+
+            if origin_inside and dest_inside:
+                skipped_hazards.append({
+                    "hazard": hz,
+                    "reason": "intra_zone",
+                    "msg": f"Intra-Zone Emergency Transit: Both warehouse and destination are within '{hz.get('name', 'Hazard')}'. Direct delivery route deployed — exterior detours bypassed to minimize latency."
+                })
+            elif dest_inside:
+                skipped_hazards.append({
+                    "hazard": hz,
+                    "reason": "target_ingress",
+                    "msg": f"Disaster Target Ingress: Destination is inside '{hz.get('name', 'Hazard')}'. Direct relief ingress route authorized (cannot detour around the destination itself)."
+                })
+            elif origin_inside:
+                skipped_hazards.append({
+                    "hazard": hz,
+                    "reason": "depot_egress",
+                    "msg": f"Depot Egress: Source warehouse is within '{hz.get('name', 'Hazard')}'. Direct egress authorized to exit disaster perimeter."
+                })
+            else:
+                routable_hazards.append(hz)
+
+        if skipped_hazards:
+            for s in skipped_hazards:
+                reasoning_trace.append({
+                    "step": f"terminal_zone_filter_{s['reason']}",
+                    "description": s["msg"],
+                    "hazard_name": s["hazard"].get("name", "Unknown"),
+                })
+
+        # Use only the routable intermediate hazards for collision checking
+        hazard_zones = routable_hazards
 
         # Step 1: Get primary route
         reasoning_trace.append({
@@ -405,9 +457,14 @@ class RoutingService:
         })
 
         if not hazard_zones:
+            _desc = (
+                f"Direct route confirmed ({len(skipped_hazards)} terminal/intra-zone hazard perimeters bypassed for direct emergency transit). Primary route is clear."
+                if skipped_hazards
+                else "No active hazard zones on transit corridor — primary route is safe."
+            )
             reasoning_trace.append({
                 "step": "no_hazards",
-                "description": "No active hazard zones — primary route is safe.",
+                "description": _desc,
             })
             return {
                 "success": True,

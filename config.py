@@ -253,6 +253,29 @@ VEHICLE_TYPES = {
     },
 }
 
+# ─── Carbon & Fuel Consumption Constants ─────────────────────────────────────
+# Used by the dispatch agent to compute environmental impact metrics.
+
+# Average fuel consumption by vehicle type (liters per 100 km)
+FUEL_CONSUMPTION_L_PER_100KM = {
+    "heavy_truck": 35.0,    # Loaded heavy cargo truck (~35 L/100km)
+    "medium_truck": 25.0,   # Medium cargo (~25 L/100km)
+    "light_van": 15.0,      # Light delivery van (~15 L/100km)
+    "helicopter": 250.0,    # Cargo helicopter (~250 L/100km equivalent)
+}
+
+# CO₂ emission factors (kg CO₂ per liter of fuel burned)
+CO2_KG_PER_LITER = {
+    "diesel": 2.68,         # IPCC default for diesel: 2.68 kg CO₂ / liter
+    "aviation": 2.52,       # Jet-A1 aviation fuel: ~2.52 kg CO₂ / liter
+}
+
+# Cost per liter of fuel (INR)
+FUEL_COST_INR_PER_LITER = {
+    "diesel": 89.62,        # Avg Indian diesel price ~₹89.62/L
+    "aviation": 105.00,     # Aviation turbine fuel ~₹105/L
+}
+
 # ─── Open-Meteo API Parameters ───────────────────────────────────────────────
 
 OPEN_METEO_HOURLY_PARAMS = [
